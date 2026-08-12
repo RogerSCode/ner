@@ -1,0 +1,35 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: local_llm_agent_server
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  agentic_app:
+    build: .
+    container_name: ner_gui
+    dns:
+      - 8.8.8.8
+    ports:
+      - "8501:8501"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434/v1
+    depends_on:
+      - ollama
+    volumes:
+      - .:/app
+
+volumes:
+  ollama_data:
