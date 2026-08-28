@@ -1,0 +1,10 @@
+# Dokumente
+*.pdf
+TO_DOs.txt
+
+# Archive
+*.zip
+
+# Kompilierte Python-Dateien
+*.pyc
+__pycache__/
