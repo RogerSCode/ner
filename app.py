@@ -5,15 +5,10 @@ import requests
 from agent_pipeline import run_agentic_pipeline, PipelineError
 
 def check_and_pull_model(model_name: str) -> bool:
-    """
-    Prüft über die Ollama API, ob das Modell existiert.
-    Wenn nicht, wird es heruntergeladen und ein Ladebalken in Streamlit angezeigt.
-    """
     base_v1_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     base_url = base_v1_url.replace("/v1", "")
     
     try:
-        # 1. Existierende Modelle abfragen
         tags_res = requests.get(f"{base_url}/api/tags", timeout=10)
         tags_res.raise_for_status()
         models = [m["name"] for m in tags_res.json().get("models", [])]
@@ -21,7 +16,6 @@ def check_and_pull_model(model_name: str) -> bool:
         if model_name in models or f"{model_name}:latest" in models:
             return True
 
-        # 2. Modell ist nicht da -> Lade es herunter
         st.warning(f"Modell '{model_name}' ist nicht lokal vorhanden. Lade herunter... (Das kann dauern)")
         progress_bar = st.progress(0.0)
         status_text = st.empty()
@@ -29,7 +23,6 @@ def check_and_pull_model(model_name: str) -> bool:
         pull_res = requests.post(f"{base_url}/api/pull", json={"name": model_name}, stream=True)
         pull_res.raise_for_status()
         
-        # 3. Stream auslesen und Fortschrittsbalken aktualisieren
         for line in pull_res.iter_lines():
             if line:
                 data = json.loads(line.decode('utf-8'))
@@ -98,7 +91,6 @@ with col2:
 
 if st.button("Agenten-Pipeline starten", type="primary"):
     
-    # --- EINGABE-VALIDIERUNG VOR DEM START ---
     if not text_input.strip():
         st.warning("Bitte gib einen klinischen Text ein.")
         st.stop()
@@ -112,7 +104,6 @@ if st.button("Agenten-Pipeline starten", type="primary"):
     except json.JSONDecodeError:
         st.error("Die eingegebene Ground Truth ist kein gültiges JSON-Format. Bitte korrigieren.")
         st.stop()
-    # ----------------------------------------
     
     if check_and_pull_model(selected_model):
         with st.spinner(f"Agenten arbeiten mit Modell '{selected_model}'..."):
@@ -127,14 +118,16 @@ if st.button("Agenten-Pipeline starten", type="primary"):
                 col_res1, col_res2 = st.columns(2)
                 with col_res1:
                     st.subheader("2. Extractor-Agent (Draft)")
-                    st.json(result.initial_json)
+                    # Durch Pydantic-Update nutzen wir nun .model_dump()
+                    st.json(result.initial_json.model_dump())
                 with col_res2:
                     st.subheader("3. Critic-Agent (Self-Refinement)")
-                    st.json(result.refined_json)
+                    st.json(result.refined_json.model_dump())
                     
                 st.subheader("📊 Quantitative Evaluation")
                 
-                p, r, f1, tp, fp, fn = berechne_metriken(gt_dict, result.refined_json)
+                # Auch bei der Metriken-Übergabe wird nun aus dem Modell ein Dictionary extrahiert
+                p, r, f1, tp, fp, fn = berechne_metriken(gt_dict, result.refined_json.model_dump())
                 
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Precision", f"{p:.2f}")
