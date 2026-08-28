@@ -9,10 +9,7 @@ local_client = OpenAI(
     api_key="ollama" 
 )
 
-# Du kannst hier das Modell definieren, das Ollama geladen hat (z.B. llama3:8b oder qwen2:7b)
-AGENT_MODEL = "llama3"
-
-def orchestrator_agent(text: str) -> str:
+def orchestrator_agent(text: str, model_name: str) -> str:
     """Agent 1: Analysiert Textkomplexität und empfiehlt autonom eine Prompt-Strategie."""
     system_prompt = """Du bist der Orchestrator-Agent einer medizinischen NER-Pipeline. 
     Analysiere den folgenden Text hinsichtlich Komplexität, Domäne und Sprache. 
@@ -25,7 +22,7 @@ def orchestrator_agent(text: str) -> str:
     
     try:
         response = local_client.chat.completions.create(
-            model=AGENT_MODEL,
+            model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
@@ -42,7 +39,7 @@ def orchestrator_agent(text: str) -> str:
         print(f"Orchestrator Fehler: {e}")
         return "Zero-Shot"
 
-def extractor_agent(text: str, strategy: str) -> dict:
+def extractor_agent(text: str, strategy: str, model_name: str) -> dict:
     """Agent 2: Führt die eigentliche Extraktion basierend auf der Strategie aus."""
     system_prompt = """Du bist ein medizinischer NER-Agent. Extrahiere Entitäten in die Kategorien 
     'Krankheit' und 'Medikament'. Antworte AUSSCHLIESSLICH im gültigen JSON-Format."""
@@ -53,21 +50,21 @@ def extractor_agent(text: str, strategy: str) -> dict:
         messages.append({"role": "user", "content": "Patient hat Migräne, nimmt Ibuprofen."})
         messages.append({"role": "assistant", "content": '{"Krankheit": ["Migräne"], "Medikament": ["Ibuprofen"]}'})
     elif strategy == "Chain-of-Thought":
-        # Erfordert vom Modell, seine Schritte zu erklären
-        system_prompt += " Denke Schritt für Schritt. Schreibe deine Analyse zuerst in ein Feld 'gedankengang', bevor du die Arrays für 'Krankheit' und 'Medikament' befüllst."
+        # Erfordert vom Modell, seine Schritte zu erklären. Wir fordern explizit einen Text-String.
+        system_prompt += " Denke Schritt für Schritt. Schreibe deine Analyse zuerst in ein Feld 'gedankengang' (als einfachen Text-String), bevor du die Arrays für 'Krankheit' und 'Medikament' befüllst."
         messages[0]["content"] = system_prompt
         
     messages.append({"role": "user", "content": text})
     
     response = local_client.chat.completions.create(
-        model=AGENT_MODEL,
+        model=model_name,
         messages=messages,
         temperature=0.1,
         response_format={"type": "json_object"}
     )
     return json.loads(response.choices[0].message.content)
 
-def critic_agent(text: str, initial_json: dict) -> dict:
+def critic_agent(text: str, initial_json: dict, model_name: str) -> dict:
     """Agent 3: Self-Refinement. Prüft das Ergebnis und korrigiert Fehler."""
     system_prompt = """Du bist ein strenger medizinischer Qualitäts-Agent. 
     Du erhältst einen Originaltext und ein extrahiertes JSON.
@@ -81,10 +78,9 @@ def critic_agent(text: str, initial_json: dict) -> dict:
     Gib AUSSCHLIESSLICH das korrigierte JSON-Objekt zurück."""
     
     user_prompt = f"Originaltext: {text}\n\nZu prüfendes JSON: {json.dumps(initial_json)}"
-    # ... (Rest bleibt gleich)
     
     response = local_client.chat.completions.create(
-        model=AGENT_MODEL,
+        model=model_name,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
@@ -94,15 +90,22 @@ def critic_agent(text: str, initial_json: dict) -> dict:
     )
     return json.loads(response.choices[0].message.content)
 
-def run_agentic_pipeline(text: str) -> ExtractionResult:
+def run_agentic_pipeline(text: str, model_name: str = "llama3") -> ExtractionResult:
     """Orchestriert den gesamten Workflow der drei Agenten."""
-    strategy = orchestrator_agent(text)
-    initial_json = extractor_agent(text, strategy)
-    refined_json = critic_agent(text, initial_json)
+    strategy = orchestrator_agent(text, model_name)
+    initial_json = extractor_agent(text, strategy, model_name)
+    refined_json = critic_agent(text, initial_json, model_name)
+    
+    # 1. Den Wert aus dem JSON extrahieren
+    raw_gedankengang = initial_json.get("gedankengang", "Kein Gedankengang (da kein Chain-of-Thought)")
+    
+    # 2. Falls das LLM eine Liste oder ein Dictionary statt eines Strings generiert hat, in String umwandeln
+    if not isinstance(raw_gedankengang, str):
+        raw_gedankengang = json.dumps(raw_gedankengang, ensure_ascii=False)
     
     return ExtractionResult(
         initial_strategy=strategy,
         initial_json=initial_json,
         refined_json=refined_json,
-        gedankengang=initial_json.get("gedankengang", "Kein Gedankengang (da kein Chain-of-Thought)")
+        gedankengang=raw_gedankengang
     )
