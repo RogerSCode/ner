@@ -2,29 +2,27 @@ import streamlit as st
 import json
 import os
 import requests
-from agent_pipeline import run_agentic_pipeline
+from agent_pipeline import run_agentic_pipeline, PipelineError
 
 def check_and_pull_model(model_name: str) -> bool:
     """
     Prüft über die Ollama API, ob das Modell existiert.
     Wenn nicht, wird es heruntergeladen und ein Ladebalken in Streamlit angezeigt.
     """
-    # Die OpenAI API URL endet auf /v1. Die native Ollama API nutzt die Basis-URL.
     base_v1_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     base_url = base_v1_url.replace("/v1", "")
     
     try:
         # 1. Existierende Modelle abfragen
-        tags_res = requests.get(f"{base_url}/api/tags")
+        tags_res = requests.get(f"{base_url}/api/tags", timeout=10)
         tags_res.raise_for_status()
         models = [m["name"] for m in tags_res.json().get("models", [])]
         
-        # Ollama hängt manchmal ':latest' an, wenn kein Tag angegeben wurde
         if model_name in models or f"{model_name}:latest" in models:
             return True
 
         # 2. Modell ist nicht da -> Lade es herunter
-        st.warning(f"Modell '{model_name}' ist nicht lokal vorhanden. Lade herunter... (Das kann je nach Größe etwas dauern)")
+        st.warning(f"Modell '{model_name}' ist nicht lokal vorhanden. Lade herunter... (Das kann dauern)")
         progress_bar = st.progress(0.0)
         status_text = st.empty()
         
@@ -42,7 +40,6 @@ def check_and_pull_model(model_name: str) -> bool:
                     completed = data["completed"]
                     if total > 0:
                         percent = completed / total
-                        # Streamlit progress bar akzeptiert Float von 0.0 bis 1.0
                         progress_bar.progress(min(percent, 1.0))
                         status_text.text(f"{status}: {int(percent*100)}%")
                 else:
@@ -51,12 +48,14 @@ def check_and_pull_model(model_name: str) -> bool:
         st.success(f"Modell '{model_name}' erfolgreich heruntergeladen!")
         return True
         
+    except requests.exceptions.Timeout:
+        st.error("Fehler: Zeitüberschreitung bei der Verbindung zu Ollama. Läuft der Container?")
+        return False
     except Exception as e:
         st.error(f"Fehler bei der Kommunikation mit Ollama: {e}")
         return False
 
 def berechne_metriken(ground_truth: dict, predicted: dict):
-    # Sicherstellen, dass ground_truth und predicted wirklich Dictionaries sind
     if not isinstance(ground_truth, dict): ground_truth = {}
     if not isinstance(predicted, dict): predicted = {}
 
@@ -86,7 +85,6 @@ st.set_page_config(page_title="Agentic NER Pipeline", layout="wide")
 st.title("🤖 Agentic AI Medical NER System")
 st.markdown("Autonome Orchestrierung, Strategiewahl & Self-Refinement")
 
-# Auswahlfeld für das Modell
 selected_model = st.selectbox(
     "Wähle das LLM-Modell:",
     ("llama3", "llama3:8b", "qwen2:7b", "mistral") 
@@ -99,10 +97,24 @@ with col2:
     gt_input = st.text_area("Ground Truth (JSON):", json.dumps({"Krankheit": ["Pneumonie"], "Medikament": ["Amoxicillin"]}, indent=2))
 
 if st.button("Agenten-Pipeline starten", type="primary"):
-    # 1. Zuerst prüfen ob das Modell da ist (und ggf. herunterladen)
-    if check_and_pull_model(selected_model):
+    
+    # --- EINGABE-VALIDIERUNG VOR DEM START ---
+    if not text_input.strip():
+        st.warning("Bitte gib einen klinischen Text ein.")
+        st.stop()
         
-        # 2. Wenn das Modell bereit ist, starte die eigentliche Pipeline
+    if len(text_input.strip()) < 10:
+        st.warning("Der klinische Text ist sehr kurz. Bitte gib einen sinnvollen Satz ein.")
+        st.stop()
+        
+    try:
+        gt_dict = json.loads(gt_input)
+    except json.JSONDecodeError:
+        st.error("Die eingegebene Ground Truth ist kein gültiges JSON-Format. Bitte korrigieren.")
+        st.stop()
+    # ----------------------------------------
+    
+    if check_and_pull_model(selected_model):
         with st.spinner(f"Agenten arbeiten mit Modell '{selected_model}'..."):
             try:
                 result = run_agentic_pipeline(text_input, model_name=selected_model)
@@ -121,9 +133,7 @@ if st.button("Agenten-Pipeline starten", type="primary"):
                     st.json(result.refined_json)
                     
                 st.subheader("📊 Quantitative Evaluation")
-                gt_dict = json.loads(gt_input)
                 
-                # Evaluiere das verfeinerte Ergebnis
                 p, r, f1, tp, fp, fn = berechne_metriken(gt_dict, result.refined_json)
                 
                 m1, m2, m3 = st.columns(3)
@@ -132,5 +142,7 @@ if st.button("Agenten-Pipeline starten", type="primary"):
                 m3.metric("F1-Score", f"{f1:.2f}")
                 st.write(f"True Positives: {tp} | False Positives: {fp} | False Negatives: {fn}")
                 
+            except PipelineError as pe:
+                st.error(f"🛑 Abbruch durch die Agenten-Pipeline: {pe}")
             except Exception as e:
-                st.error(f"Fehler bei der Pipeline-Ausführung: {e}")
+                st.error(f"⚠️ Unerwarteter Systemfehler: {e}")
