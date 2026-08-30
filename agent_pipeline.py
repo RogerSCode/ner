@@ -141,11 +141,26 @@ def critic_agent(text: str, initial_json: dict, model_name: str) -> dict:
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     return generate_with_retry_and_filter(messages=messages, model_name=model_name, expects_gedankengang=False)
 
-def run_agentic_pipeline(text: str, model_name: str = "llama3") -> ExtractionResult:
-    strategy = orchestrator_agent(text, model_name)
+def run_agentic_pipeline(text: str, model_name: str = "llama3", forced_strategy: str = "Auto") -> ExtractionResult:
+    # 1. Orchestrator-Phase (Überspringen, wenn Baseline erzwungen wird)
+    if forced_strategy and forced_strategy != "Auto":
+        strategy = forced_strategy
+    else:
+        strategy = orchestrator_agent(text, model_name)
+        
+    # 2. Extractor-Phase (Der erste Entwurf)
     initial_json = extractor_agent(text, strategy, model_name)
-    refined_json = critic_agent(text, initial_json, model_name)
     
+    # 3. Critic-Phase (Self-Refinement)
+    #  Wenn wir die simple Baseline testen, macht der Critic NICHTS. 
+    # Er nimmt einfach die erste Ausgabe.
+    if forced_strategy == "Zero-Shot":
+        refined_json = initial_json.copy()
+    else:
+        # Bei "Auto" schlägt der Critic-Agent zu und korrigiert den Entwurf!
+        refined_json = critic_agent(text, initial_json, model_name)
+    
+    # 4. Aufräumen für die GUI
     raw_gedankengang = initial_json.pop("gedankengang", "Kein Gedankengang")
     refined_json.pop("gedankengang", None)
     
