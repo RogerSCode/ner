@@ -1,6 +1,7 @@
 import os
 import json
-from openai import OpenAI
+# NEU: Spezifische Exceptions aus der OpenAI-Bibliothek importieren
+from openai import OpenAI, APIConnectionError, APITimeoutError, APIStatusError
 from pydantic import ValidationError
 from models import ExtractionResult
 
@@ -83,9 +84,17 @@ def generate_with_retry_and_filter(messages: list, model_name: str, expects_geda
                 messages.append({"role": "assistant", "content": raw_content if raw_content else "{}"})
                 messages.append({"role": "user", "content": error_msg})
             else:
-                raise PipelineError(f"Modell scheiterte nach {max_retries} Versuchen. Fehler: {e}")
+                raise PipelineError(f"Modell scheiterte nach {max_retries} Versuchen an Formatierungsfehlern. Letzter Fehler: {e}")
+        
+        # NEU: Spezifische Fehlerbehandlung auch in der Haupt-Generierung
+        except APIConnectionError:
+            raise PipelineError("Verbindungsfehler: Der lokale Ollama-Server ist nicht erreichbar. Bitte stelle sicher, dass Docker/Ollama läuft.")
+        except APITimeoutError:
+            raise PipelineError(f"Zeitüberschreitung: Das Modell '{model_name}' hat nach 120 Sekunden nicht geantwortet. Ist der Rechner überlastet?")
+        except APIStatusError as e:
+            raise PipelineError(f"Ollama API-Fehler (Code {e.status_code}): {e.message}")
         except Exception as e:
-            raise PipelineError(f"Unerwarteter API-Fehler: {str(e)}")
+            raise PipelineError(f"Unerwarteter Systemfehler bei der Generierung: {str(e)}")
 
 def orchestrator_agent(text: str, model_name: str) -> str:
     system_prompt = """Du bist der Orchestrator-Agent einer medizinischen NER-Pipeline. 
@@ -105,11 +114,18 @@ def orchestrator_agent(text: str, model_name: str) -> str:
         if "Chain-of-Thought" in raw_output: return "Chain-of-Thought"
         if "Few-Shot" in raw_output: return "Few-Shot"
         return "Zero-Shot"
+        
+    # NEU: Gezielte Reaktion auf Netz- und API-Fehler im Orchestrator (ersetzt generisches Exception)
+    except APIConnectionError:
+        raise PipelineError("Orchestrator-Fehler: Keine Verbindung zu Ollama. Läuft der Dienst im Hintergrund?")
+    except APITimeoutError:
+        raise PipelineError(f"Orchestrator-Fehler: Timeout beim Zugriff auf Modell '{model_name}'.")
+    except APIStatusError as e:
+        raise PipelineError(f"Orchestrator-Fehler: API meldet Status {e.status_code}. Ist das Modell korrekt geladen?")
     except Exception as e:
-        raise PipelineError(f"Orchestrator Fehler: {str(e)}")
+        raise PipelineError(f"Unerwarteter Fehler im Orchestrator: {str(e)}")
 
 def extractor_agent(text: str, strategy: str, model_name: str) -> dict:
-    # Prompt aktualisiert!
     system_prompt = f"""Du bist ein medizinischer NER-Agent. Extrahiere Entitäten in folgende Kategorien: 
     {', '.join(ALLOWED_CATEGORIES)}. Antworte AUSSCHLIESSLICH im gültigen JSON-Format."""
     
@@ -126,7 +142,6 @@ def extractor_agent(text: str, strategy: str, model_name: str) -> dict:
     return generate_with_retry_and_filter(messages=messages, model_name=model_name, expects_gedankengang=(strategy == "Chain-of-Thought"))
 
 def critic_agent(text: str, initial_json: dict, model_name: str) -> dict:
-    # Prompt aktualisiert und Einschränkung (Dosierung ignorieren) entfernt!
     system_prompt = f"""Du bist ein strenger medizinischer Qualitäts-Agent. 
     Du erhältst einen Originaltext und ein extrahiertes JSON.
     Prüfe: Wurden medizinische Entitäten übersehen oder falsch zugeordnet?
@@ -142,22 +157,19 @@ def critic_agent(text: str, initial_json: dict, model_name: str) -> dict:
     return generate_with_retry_and_filter(messages=messages, model_name=model_name, expects_gedankengang=False)
 
 def run_agentic_pipeline(text: str, model_name: str = "llama3", forced_strategy: str = "Auto") -> ExtractionResult:
-    # 1. Orchestrator-Phase (Überspringen, wenn Baseline erzwungen wird)
+    # 1. Orchestrator-Phase 
     if forced_strategy and forced_strategy != "Auto":
         strategy = forced_strategy
     else:
         strategy = orchestrator_agent(text, model_name)
         
-    # 2. Extractor-Phase (Der erste Entwurf)
+    # 2. Extractor-Phase
     initial_json = extractor_agent(text, strategy, model_name)
     
-    # 3. Critic-Phase (Self-Refinement)
-    #  Wenn wir die simple Baseline testen, macht der Critic NICHTS. 
-    # Er nimmt einfach die erste Ausgabe.
+    # 3. Critic-Phase
     if forced_strategy == "Zero-Shot":
         refined_json = initial_json.copy()
     else:
-        # Bei "Auto" schlägt der Critic-Agent zu und korrigiert den Entwurf!
         refined_json = critic_agent(text, initial_json, model_name)
     
     # 4. Aufräumen für die GUI
