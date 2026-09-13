@@ -1,14 +1,13 @@
-import os
 import json
-# NEU: Spezifische Exceptions aus der OpenAI-Bibliothek importieren
 from openai import OpenAI, APIConnectionError, APITimeoutError, APIStatusError
 from pydantic import ValidationError
 from models import ExtractionResult
+from config import settings
 
 local_client = OpenAI(
-    base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+    base_url=settings.ollama_base_url,
     api_key="ollama",
-    timeout=120.0
+    timeout=settings.api_timeout
 )
 
 class PipelineError(Exception):
@@ -86,11 +85,10 @@ def generate_with_retry_and_filter(messages: list, model_name: str, expects_geda
             else:
                 raise PipelineError(f"Modell scheiterte nach {max_retries} Versuchen an Formatierungsfehlern. Letzter Fehler: {e}")
         
-        # NEU: Spezifische Fehlerbehandlung auch in der Haupt-Generierung
         except APIConnectionError:
             raise PipelineError("Verbindungsfehler: Der lokale Ollama-Server ist nicht erreichbar. Bitte stelle sicher, dass Docker/Ollama läuft.")
         except APITimeoutError:
-            raise PipelineError(f"Zeitüberschreitung: Das Modell '{model_name}' hat nach 120 Sekunden nicht geantwortet. Ist der Rechner überlastet?")
+            raise PipelineError(f"Zeitüberschreitung: Das Modell '{model_name}' hat nach {settings.api_timeout} Sekunden nicht geantwortet. Ist der Rechner überlastet?")
         except APIStatusError as e:
             raise PipelineError(f"Ollama API-Fehler (Code {e.status_code}): {e.message}")
         except Exception as e:
@@ -115,7 +113,6 @@ def orchestrator_agent(text: str, model_name: str) -> str:
         if "Few-Shot" in raw_output: return "Few-Shot"
         return "Zero-Shot"
         
-    # NEU: Gezielte Reaktion auf Netz- und API-Fehler im Orchestrator (ersetzt generisches Exception)
     except APIConnectionError:
         raise PipelineError("Orchestrator-Fehler: Keine Verbindung zu Ollama. Läuft der Dienst im Hintergrund?")
     except APITimeoutError:

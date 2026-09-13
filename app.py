@@ -6,11 +6,13 @@ import pandas as pd
 from datetime import datetime
 from agent_pipeline import run_agentic_pipeline, PipelineError, ALLOWED_CATEGORIES
 from metrics import berechne_metriken
+from config import settings
+
 # -------------------------------------------------------------------
 # Hilfsfunktionen
 # -------------------------------------------------------------------
 def check_and_pull_model(model_name: str) -> bool:
-    base_v1_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    base_v1_url = settings.ollama_base_url
     base_url = base_v1_url.replace("/v1", "")
     try:
         tags_res = requests.get(f"{base_url}/api/tags", timeout=10)
@@ -44,15 +46,12 @@ def check_and_pull_model(model_name: str) -> bool:
         st.error(f"Kommunikationsfehler mit Ollama: {e}")
         return False
 
-
-
 def dict_to_dataframe(data_dict: dict) -> pd.DataFrame:
     """Wandelt das JSON in eine flache, bearbeitbare Tabelle um."""
     rows = []
     for cat in ALLOWED_CATEGORIES:
         for val in data_dict.get(cat, []):
             rows.append({"Kategorie": cat, "Extrahierter Wert": val})
-    # Falls leer, eine leere Zeile als Startpunkt anbieten
     if not rows:
         rows.append({"Kategorie": "Medikament", "Extrahierter Wert": ""})
     return pd.DataFrame(rows)
@@ -74,14 +73,12 @@ def save_to_db(original_text: str, validated_dict: dict):
     with open(db_file, 'w', encoding='utf-8') as f:
         json.dump(db_data, f, indent=2, ensure_ascii=False)
 
-
 # -------------------------------------------------------------------
 # Streamlit UI
 # -------------------------------------------------------------------
 st.set_page_config(page_title="Agentic NER Pipeline", layout="wide")
 st.title("🤖 Agentic AI Medical NER System")
 
-# Session State initialisieren (verhindert das Verschwinden der Daten beim Editieren)
 if "pipeline_result" not in st.session_state:
     st.session_state.pipeline_result = None
 if "current_text" not in st.session_state:
@@ -90,7 +87,6 @@ if "current_text" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ System-Konfiguration")
     
-    # Der Anwendungs-Modus trennt die Logik
     app_mode = st.radio(
         "Wähle den Anwendungs-Modus:",
         ("1️⃣ Klinische Anwendung (Arzt)", "2️⃣ System-Evaluation (Data Science)")
@@ -98,14 +94,13 @@ with st.sidebar:
     
     st.divider()
     
-    # Modellauswahl
-    default_env_model = os.environ.get("DEFAULT_MODEL", "llama3")
+    # Modellauswahl nutzt nun die validierten Settings
+    default_env_model = settings.default_model
     available_models = ["llama3", "llama3:8b", "qwen2:7b", "mistral"]
     if default_env_model not in available_models:
         available_models.insert(0, default_env_model)
     selected_model = st.selectbox("LLM-Modell:", available_models, index=available_models.index(default_env_model))
 
-    # Strategieauswahl
     strategy_options = ["Auto", "Zero-Shot", "Few-Shot", "Chain-of-Thought"]
     selected_strategy = st.selectbox(
         "Prompting-Strategie:", 
@@ -114,10 +109,6 @@ with st.sidebar:
         help="Wähle 'Auto' für den Agentic Orchestrator oder erzwinge eine Strategie für die Baseline-Messung."
     )
 
-
-# =====================================================================
-# MODUS 1: KLINISCHE ANWENDUNG (Human-in-the-Loop, Persistenz)
-# =====================================================================
 if app_mode == "1️⃣ Klinische Anwendung (Arzt)":
     st.markdown("In diesem Modus können unstrukturierte Arztbriefe eingefügt werden. Die KI extrahiert die Entitäten, welche anschließend fachlich validiert und in der Datenbank gespeichert werden können.")
     
@@ -142,7 +133,6 @@ if app_mode == "1️⃣ Klinische Anwendung (Arzt)":
                 except Exception as e:
                     st.error(f"⚠️ Systemfehler: {e}")
 
-    # Sobald ein Ergebnis da ist und es zum aktuellen Text passt, anzeigen
     if st.session_state.pipeline_result and st.session_state.current_text == text_input:
         res = st.session_state.pipeline_result
         
@@ -158,7 +148,6 @@ if app_mode == "1️⃣ Klinische Anwendung (Arzt)":
         st.header("3. Human Review & Fachliche Freigabe")
         st.markdown("Prüfe die von der KI extrahierten Daten. Füge vergessene Werte hinzu oder korrigiere Fehler.")
         
-        # DataFrame bauen und bearbeitbar machen
         df = dict_to_dataframe(res.refined_json.model_dump())
         edited_df = st.data_editor(
             df, 
@@ -171,7 +160,6 @@ if app_mode == "1️⃣ Klinische Anwendung (Arzt)":
         
         st.header("4. Ground-Truth-DB (Persistenz)")
         if st.button("💾 Als validiert markieren & in DB speichern", type="secondary"):
-            # Wandelt den DataFrame zurück in ein Dictionary, das nur ALLOWED_CATEGORIES als Keys hat
             edited_dict = {cat: [] for cat in ALLOWED_CATEGORIES}
             for _, row in edited_df.iterrows():
                 cat = row.get("Kategorie")
@@ -182,10 +170,6 @@ if app_mode == "1️⃣ Klinische Anwendung (Arzt)":
             save_to_db(st.session_state.current_text, edited_dict)
             st.success("Erfolgreich persistiert! Die Daten stehen nun als neuer Goldstandard in der Datenbank zur Verfügung.")
 
-
-# =====================================================================
-# MODUS 2: SYSTEM-EVALUATION (Qualitätsmessung gegen Goldstandard)
-# =====================================================================
 elif app_mode == "2️⃣ System-Evaluation (Data Science)":
     st.markdown("Dieser Modus dient der Qualitätsmessung (Precision, Recall, F1) der Agenten-Pipeline anhand eines bestehenden Goldstandards (Batch-Evaluierung).")
     
@@ -205,7 +189,6 @@ elif app_mode == "2️⃣ System-Evaluation (Data Science)":
             if st.button("📊 Batch-Evaluierung starten", type="primary"):
                 if check_and_pull_model(selected_model):
                     
-                    # Globale Zähler für die Metriken über das gesamte Batch
                     global_tp, global_fp, global_fn = 0, 0, 0
                     
                     progress_bar = st.progress(0.0)
@@ -213,7 +196,6 @@ elif app_mode == "2️⃣ System-Evaluation (Data Science)":
                     
                     with st.spinner(f"Evaluiere {sample_size} Texte mit {selected_model} (Strategie: {selected_strategy})..."):
                         
-                        # Schleife über die gewünschte Anzahl an Texten
                         for i in range(sample_size):
                             text_eval = batch_data[i].get("text", "")
                             gt_dict = batch_data[i].get("ground_truth", {})
@@ -221,17 +203,14 @@ elif app_mode == "2️⃣ System-Evaluation (Data Science)":
                             status_text.text(f"Analysiere Text {i+1} von {sample_size}...")
                             
                             try:
-                                # Pipeline aufrufen
                                 result = run_agentic_pipeline(
                                     text_eval, 
                                     model_name=selected_model, 
                                     forced_strategy=selected_strategy
                                 )
                                 
-                                # Lokale Metriken für diesen einen Text berechnen
                                 _, _, _, tp, fp, fn = berechne_metriken(gt_dict, result.refined_json.model_dump())
                                 
-                                # Zu den globalen Metriken addieren
                                 global_tp += tp
                                 global_fp += fp
                                 global_fn += fn
@@ -239,17 +218,14 @@ elif app_mode == "2️⃣ System-Evaluation (Data Science)":
                             except Exception as e:
                                 st.error(f"Fehler bei Text {i+1}: {e}")
                                 
-                            # Fortschrittsbalken aktualisieren
                             progress_bar.progress((i + 1) / sample_size)
                             
                         status_text.text("Evaluierung abgeschlossen!")
                         
-                        # Globale Metriken über das gesamte Batch berechnen
                         p = global_tp / (global_tp + global_fp) if (global_tp + global_fp) > 0 else 0.0
                         r = global_tp / (global_tp + global_fn) if (global_tp + global_fn) > 0 else 0.0
                         f1 = 2 * (p * r) / (p + r) if (p + r) > 0 else 0.0
                         
-                        # Ergebnisse präsentieren
                         st.header("3. Quantitatives Gesamtergebnis")
                         st.info(f"**Modell:** {selected_model} | **Strategie:** {selected_strategy} | **Sample Size:** {sample_size} Texte")
                         
@@ -267,4 +243,3 @@ elif app_mode == "2️⃣ System-Evaluation (Data Science)":
             st.error(f"Fehler beim Lesen der Datei: {e}")
     else:
         st.info("Bitte lade die `app_testdaten.json` hoch, um die Evaluation zu starten.")
-        
