@@ -230,9 +230,23 @@ elif app_mode == "2️⃣ System-Evaluation (Data Science)":
                         st.info(f"**Modell:** {selected_model} | **Strategie:** {selected_strategy} | **Sample Size:** {sample_size} Texte")
                         
                         m1, m2, m3 = st.columns(3)
-                        m1.metric("Globale Precision", f"{p:.2f}")
-                        m2.metric("Globaler Recall", f"{r:.2f}")
-                        m3.metric("Globaler F1-Score", f"{f1:.2f}")
+                        
+                        # HIER WURDEN DIE TOOLTIPS (HELP) HINZUGEFÜGT
+                        m1.metric(
+                            "Globale Precision", 
+                            f"{p:.2f}", 
+                            help="Genauigkeit: Wie viel Prozent der von der KI extrahierten Entitäten waren tatsächlich richtig? (Ein niedriger Wert bedeutet viele 'Halluzinationen' / False Positives)."
+                        )
+                        m2.metric(
+                            "Globaler Recall", 
+                            f"{r:.2f}", 
+                            help="Trefferquote: Wie viel Prozent der im Originaltext vorhandenen Entitäten hat die KI gefunden? (Ein niedriger Wert bedeutet, dass viel übersehen wurde / False Negatives)."
+                        )
+                        m3.metric(
+                            "Globaler F1-Score", 
+                            f"{f1:.2f}", 
+                            help="Das harmonische Mittel aus Precision und Recall. Dient als einzelner, ausbalancierter Score für die Gesamtqualität des Modells."
+                        )
                         
                         st.markdown("### Fehler-Analyse über das gesamte Batch")
                         st.write(f"**True Positives (Korrekt gefunden):** {global_tp}")
